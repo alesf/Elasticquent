@@ -6,6 +6,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Elasticquent\ElasticquentCursor;
 use Elasticquent\ElasticquentCursorPaginator;
+use \Elasticquent\ElasticquentSeoPaginator;
 
 
 
@@ -258,11 +259,40 @@ class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collect
 
     public function paginateSeo($pageLimit = 25)
     {
+        $page = ElasticquentSeoPaginator::resolveCurrentPage() ?: 1;
 
+        return new ElasticquentSeoPaginator($this->items, $this->hits, $this->totalHits(), $pageLimit, $page, ['path' => ElasticquentSeoPaginator::resolveCurrentPath()]);
     }
 
 
 
+    public  function paginateCollectionSeo($perPage, $except = [], $loadRelationAfterSlice = [],  $costomCount = false, $pageName = 'page', $fragment = null)
+    {
 
+
+        $currentPage = ElasticquentSeoPaginator::resolveCurrentPage($pageName);
+        $currentPageItems = $this->slice(($currentPage - 1) * $perPage, $perPage);
+        $currentPageItems->load($loadRelationAfterSlice);
+        parse_str(request()->getQueryString(), $query);
+        unset($query[$pageName]);
+        foreach($except as $exceptItem){
+            unset($query[$exceptItem]);
+        }
+        $paginator = new ElasticquentSeoPaginator(
+            $currentPageItems,
+            $this->hits,
+            $costomCount ? $costomCount : $this->count(),
+            $perPage,
+            $currentPage,
+            [
+                'pageName' => $pageName,
+                'path' => ElasticquentSeoPaginator::resolveCurrentPath(),
+                'query' => $query,
+                'fragment' => $fragment
+            ]
+        );
+
+        return $paginator;
+    }
 
 }

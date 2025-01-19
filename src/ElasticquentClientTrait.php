@@ -20,8 +20,17 @@ trait ElasticquentClientTrait
             return \Elasticsearch\ClientBuilder::fromConfig($config);
         }
 
+        // elasticsearch v2.0 using builder
+        if (class_exists('Elastic\Elasticsearch\ClientBuilder')) {
+            return \Elastic\Elasticsearch\ClientBuilder::fromConfig($config);
+        }
+
+        // elasticsearch v2.0 using builder
+        if (class_exists('Elastic\Elasticsearch\Client')) {
+            return new \Elastic\Elasticsearch\Client($config);
+        }
+
         // elasticsearch v1
         return new \Elasticsearch\Client($config);
     }
-
 }

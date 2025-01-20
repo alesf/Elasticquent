@@ -1,6 +1,14 @@
 <?php namespace Elasticquent;
 
+
 use Elasticquent\ElasticquentPaginator as Paginator;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
+use Elasticquent\ElasticquentCursor;
+use Elasticquent\ElasticquentCursorPaginator;
+use \Elasticquent\ElasticquentSeoPaginator;
+
+
 
 class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collection
 {
@@ -9,6 +17,15 @@ class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collect
     protected $shards;
     protected $hits;
     protected $aggregations = null;
+    protected $params = [];
+    protected $perPage;
+    protected $cursor;
+    protected $cursorName;
+    protected $cursorOrders;
+
+
+
+
 
     /**
      * Create a new instance containing Elasticsearch results
@@ -21,7 +38,7 @@ class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collect
      * @param  array  $meta
      * @return void
      */
-    public function __construct($items, $meta = null)
+    public function __construct($items, ?array $meta = null, ?array $params = [], ?int $perPage = null, ?ElasticquentCursor $cursor = null, ?string $cursorName = 'cursor', ?Collection $cursorOrders = null)
     {
         // Detect if arguments are old deprecated version ($results, $instance)
         if (isset($items['hits']) and $meta instanceof \Illuminate\Database\Eloquent\Model) {
@@ -37,6 +54,28 @@ class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collect
         if (is_array($meta)) {
             $this->setMeta($meta);
         }
+
+
+        if(is_array($params)){
+            $this->setParams($params);
+        }
+
+        if(is_int($perPage)){
+            $this->setPerPage($perPage);
+        }
+
+        if(is_a($cursor, ElasticquentCursor::class, true)){
+            $this->setCursor($cursor);
+        }
+
+        if(is_string($cursorName)){
+            $this->setCursorName($cursorName);
+        }
+
+        if(is_a($cursorOrders, Collection::class, true)){
+            $this->setCursorOrders($cursorOrders);
+        }
+
     }
 
     /**
@@ -56,6 +95,34 @@ class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collect
         return $this;
     }
 
+    private function setParams($params): void
+    {
+        $this->params = $params;
+    }
+
+    private function setPerPage($perPage): void
+    {
+
+        $this->perPage = $perPage;
+    }
+
+
+    private function setCursor($cursor): void
+    {
+        $this->cursor = $cursor;
+    }
+
+    private function setCursorName(string $cursorName): void
+    {
+        $this->cursorName = $cursorName;
+    }
+
+
+    private function setCursorOrders(Collection $cursorOrders): void
+    {
+        $this->cursorOrders = $cursorOrders;
+    }
+
     /**
      * Total Hits
      *
@@ -63,7 +130,7 @@ class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collect
      */
     public function totalHits()
     {
-        return $this->hits['total'];
+        return $this->hits['total']['value'];
     }
 
     /**
@@ -142,7 +209,90 @@ class ElasticquentResultCollection extends \Illuminate\Database\Eloquent\Collect
     public function paginate($pageLimit = 25)
     {
         $page = Paginator::resolveCurrentPage() ?: 1;
-       
+
         return new Paginator($this->items, $this->hits, $this->totalHits(), $pageLimit, $page, ['path' => Paginator::resolveCurrentPath()]);
     }
+
+    /*
+     * Аналог cursor pagination c eloqument для elasticsearch
+     * на основе search_after, обезательно наличие сортировки в параметрах
+    */
+
+    public function paginateCursor($itemSortKey = 'sort_data'){
+
+
+        return new ElasticquentCursorPaginator($this->items, $this->perPage, $this->cursor, [
+            'path' => Paginator::resolveCurrentPath(),
+            'cursorName' => $this->cursorName,
+            'parameters' => $this->cursorOrders->keys(),
+            'itemSortKey' => $itemSortKey,
+        ]);
+
+    }
+
+    public  function paginateCollection($perPage, $except = [], $loadRelationAfterSlice = [],  $costomCount = false, $pageName = 'page', $fragment = null)
+    {
+
+        $currentPage = \Illuminate\Pagination\LengthAwarePaginator::resolveCurrentPage($pageName);
+        $currentPageItems = $this->slice(($currentPage - 1) * $perPage, $perPage);
+        $currentPageItems->load($loadRelationAfterSlice);
+        parse_str(request()->getQueryString(), $query);
+        unset($query[$pageName]);
+        foreach($except as $exceptItem){
+            unset($query[$exceptItem]);
+        }
+        $paginator = new \Illuminate\Pagination\LengthAwarePaginator(
+            $currentPageItems,
+            $costomCount ? $costomCount : $this->count(),
+            $perPage,
+            $currentPage,
+            [
+                'pageName' => $pageName,
+                'path' => \Illuminate\Pagination\LengthAwarePaginator::resolveCurrentPath(),
+                'query' => $query,
+                'fragment' => $fragment
+            ]
+        );
+
+        return $paginator;
+    }
+
+    public function paginateSeo($pageLimit = 25)
+    {
+        $page = ElasticquentSeoPaginator::resolveCurrentPage() ?: 1;
+
+        return new ElasticquentSeoPaginator($this->items, $this->hits, $this->totalHits(), $pageLimit, $page, ['path' => ElasticquentSeoPaginator::resolveCurrentPath()]);
+    }
+
+
+
+    public  function paginateCollectionSeo($perPage, $except = [], $loadRelationAfterSlice = [],  $costomCount = false, $pageName = 'page', $fragment = null)
+    {
+
+
+        $currentPage = ElasticquentSeoPaginator::resolveCurrentPage($pageName);
+        $currentPageItems = $this->slice(($currentPage - 1) * $perPage, $perPage);
+        $currentPageItems->load($loadRelationAfterSlice);
+        parse_str(request()->getQueryString(), $query);
+        unset($query[$pageName]);
+        foreach($except as $exceptItem){
+            unset($query[$exceptItem]);
+        }
+        $paginator = new ElasticquentSeoPaginator(
+            $currentPageItems,
+            $this->hits,
+            $costomCount ? $costomCount : $this->count(),
+            $perPage,
+            $currentPage,
+            [
+                'pageName' => $pageName,
+                'path' => ElasticquentSeoPaginator::resolveCurrentPath(),
+                'query' => $query,
+                'fragment' => $fragment
+            ]
+        );
+
+        return $paginator;
+    }
+
 }

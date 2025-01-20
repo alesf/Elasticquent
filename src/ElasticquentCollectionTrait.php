@@ -25,9 +25,11 @@ trait ElasticquentCollectionTrait
      */
     public function addToIndex()
     {
+
         if ($this->isEmpty()) {
             return null;
         }
+
 
         // Use an stdClass to store result of elasticsearch operation
         $result = new \stdClass;
@@ -44,15 +46,16 @@ trait ElasticquentCollectionTrait
                 $params['body'][] = array(
                     'index' => array(
                         '_id' => $item->getKey(),
-                        '_type' => $item->getTypeName(),
                         '_index' => $item->getIndexName(),
                     ),
                 );
 
                 $params['body'][] = $item->getIndexDocumentData();
             }
-
+            
             $result = $this->getElasticSearchClient()->bulk($params);
+
+
 
             // Check for errors
             if ( (array_key_exists('errors', $result) && $result['errors'] != false ) || (array_key_exists('Message', $result) && stristr('Request size exceeded', $result['Message']) !== false)) {
@@ -83,7 +86,6 @@ trait ElasticquentCollectionTrait
             $params['body'][] = array(
                 'delete' => array(
                     '_id' => $item->getKey(),
-                    '_type' => $item->getTypeName(),
                     '_index' => $item->getIndexName(),
                 ),
             );

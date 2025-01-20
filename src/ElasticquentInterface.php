@@ -25,13 +25,6 @@ interface ElasticquentInterface
     public function getIndexName();
 
     /**
-     * Get Type Name
-     *
-     * @return string
-     */
-    public function getTypeName();
-
-    /**
      * Uses Timestamps In Index.
      */
     public function usesTimestampsInIndex();
@@ -137,23 +130,6 @@ interface ElasticquentInterface
     public static function putMapping($ignoreConflicts = false);
 
     /**
-     * Delete Mapping
-     *
-     * @return
-     */
-    public static function deleteMapping();
-
-    /**
-     * Rebuild Mapping
-     *
-     * This will delete and then re-add
-     * the mapping for this model.
-     *
-     * @return
-     */
-    public static function rebuildMapping();
-
-    /**
      * Get Mapping
      *
      * Get our existing Elasticsearch mapping
@@ -163,12 +139,4 @@ interface ElasticquentInterface
      */
     public static function getMapping();
 
-    /**
-     * Type Exists
-     *
-     * Does this type exist?
-     *
-     * @return bool
-     */
-    public static function typeExists();
 }

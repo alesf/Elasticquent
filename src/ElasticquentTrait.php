@@ -3,9 +3,11 @@
 namespace Elasticquent;
 
 use Exception;
+use Illuminate\Support\Arr;
 use ReflectionMethod;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Support\Collection;
 
 /**
  * Elasticquent Trait
@@ -16,6 +18,7 @@ use Illuminate\Database\Eloquent\Relations\Relation;
 trait ElasticquentTrait
 {
     use ElasticquentClientTrait;
+    use ElasticquentBaseTrait;
 
     /**
      * Uses Timestamps In Index
@@ -65,16 +68,6 @@ trait ElasticquentTrait
     }
 
     /**
-     * Get Type Name
-     *
-     * @return string
-     */
-    public function getTypeName()
-    {
-        return $this->getTable();
-    }
-
-    /**
      * Uses Timestamps In Index.
      */
     public function usesTimestampsInIndex()
@@ -100,36 +93,7 @@ trait ElasticquentTrait
         $this->useTimestampsInIndex(false);
     }
 
-    /**
-     * Get Mapping Properties
-     *
-     * @return array
-     */
-    public function getMappingProperties()
-    {
-        return $this->mappingProperties;
-    }
 
-    /**
-     * Set Mapping Properties
-     *
-     * @param    array $mapping
-     * @internal param array $mapping
-     */
-    public function setMappingProperties(array $mapping = null)
-    {
-        $this->mappingProperties = $mapping;
-    }
-
-    /**
-     * Get Index Settings
-     *
-     * @return array
-     */
-    public function getIndexSettings()
-    {
-        return $this->indexSettings;
-    }
 
     /**
      * Is Elasticsearch Document
@@ -164,18 +128,7 @@ trait ElasticquentTrait
         return $this->documentVersion;
     }
 
-    /**
-     * Get Index Document Data
-     *
-     * Get the data that Elasticsearch will
-     * index for this particular document.
-     *
-     * @return array
-     */
-    public function getIndexDocumentData()
-    {
-        return $this->toArray();
-    }
+
 
     /**
      * Index Documents
@@ -218,14 +171,16 @@ trait ElasticquentTrait
      * @param int   $limit
      * @param int   $offset
      * @param array $sort
+     * @param string   $paginationType
      *
      * @return ElasticquentResultCollection
      */
-    public static function searchByQuery($query = null, $aggregations = null, $sourceFields = null, $limit = null, $offset = null, $sort = null)
+    public static function searchByQuery($query = null, $aggregations = null, $sourceFields = null, $limit = null, $offset = null, $searchAfter = null, $sort = null, $paginationType = 'base', $cursorName = 'cursor' )
     {
         $instance = new static;
 
-        $params = $instance->getBasicEsParams(true, $limit, $offset);
+        $params = $instance->getBasicEsParams(true, $limit, $offset, true);
+        $perPage = $params['size'];
 
         if (!empty($sourceFields)) {
             $params['body']['_source']['include'] = $sourceFields;
@@ -235,17 +190,33 @@ trait ElasticquentTrait
             $params['body']['query'] = $query;
         }
 
+        if (!empty($searchAfter)) {
+            $params['body']['search_after'] = $searchAfter;
+        }
+
         if (!empty($aggregations)) {
             $params['body']['aggs'] = $aggregations;
         }
 
         if (!empty($sort)) {
             $params['body']['sort'] = $sort;
+        }else{
+            $params['body']['sort'] = $instance->getDefaultSort();
         }
+
+        if(empty($params['body']['sort']) && $paginationType !== 'cursor'){
+            throw new Exception('If use cursort pagination you must add sort direction');
+        }
+
+        if($paginationType === 'cursor'){
+            list($cursor, $cursorOrders) = self::paginateUsingCursor($params, $cursorName);
+        }
+
 
         $result = $instance->getElasticSearchClient()->search($params);
 
-        return static::hydrateElasticsearchResult($result);
+
+        return static::hydrateElasticsearchResult($result, $params, $perPage, $cursor ?? null, $cursorName, $cursorOrders ?? null);
     }
 
     /**
@@ -262,7 +233,7 @@ trait ElasticquentTrait
 
         $result = $instance->getElasticSearchClient()->search($params);
 
-        return static::hydrateElasticsearchResult($result);
+        return static::hydrateElasticsearchResult($result, $params);
     }
 
     /**
@@ -271,20 +242,55 @@ trait ElasticquentTrait
      * Simple search using a match _all query
      *
      * @param string $term
+     * @param string $paginationType
+     * @param string $cursorName
      *
      * @return ElasticquentResultCollection
      */
-    public static function search($term = '')
+    public static function search($term = '', string $paginationType = 'base' , $cursorName = 'cursor')
     {
         $instance = new static;
 
-        $params = $instance->getBasicEsParams();
+        $params = $instance->getBasicEsParams(true, null, null, true);
+        $params['body']['sort'] = $instance->getDefaultSort();
+
+        $perPage = $params['size'];
+
+        if($paginationType === 'cursor'){
+            list($cursor, $cursorOrders) = self::paginateUsingCursor($params, $cursorName);
+        }
 
         $params['body']['query']['match']['_all'] = $term;
 
         $result = $instance->getElasticSearchClient()->search($params);
 
-        return static::hydrateElasticsearchResult($result);
+        return static::hydrateElasticsearchResult($result, $params, $perPage, $cursor ?? null);
+    }
+
+    protected static function paginateUsingCursor(&$params, $cursorName = 'cursor'){
+
+
+        if(!Arr::has($params,'body.sort')){
+            throw new Exception('If use cursort pagination you must add sort direction');
+        }
+
+        $cursor = is_string(request()->get($cursorName))
+            ? ElasticquentCursor::fromEncoded(request()->get($cursorName))
+            : ElasticquentCursorPaginator::resolveCurrentCursor($cursorName, null);
+
+
+        $orders = static::ensureOrderForCursorPagination(Arr::get($params,'body.sort'), ! is_null($cursor) && $cursor->pointsToPreviousItems());
+
+        if(!is_null($cursor)){
+            $params['body']['search_after'] = array_values($cursor->getParameters());
+        }
+
+        $params['body']['sort'] = $orders->toArray();
+
+        $params['size'] += 1;
+
+        return [$cursor, $orders];
+
     }
 
     /**
@@ -324,20 +330,7 @@ trait ElasticquentTrait
         return $this->getElasticSearchClient()->delete($this->getBasicEsParams());
     }
 
-    /**
-     * Partial Update to Indexed Document
-     *
-     * @return array
-     */
-    public function updateIndex()
-    {
-        $params = $this->getBasicEsParams();
 
-        // Get our document body data.
-        $params['body']['doc'] = $this->getIndexDocumentData();
-
-        return $this->getElasticSearchClient()->update($params);
-    }
 
     /**
      * Get Search Document
@@ -352,41 +345,7 @@ trait ElasticquentTrait
         return $this->getElasticSearchClient()->get($this->getBasicEsParams());
     }
 
-    /**
-     * Get Basic Elasticsearch Params
-     *
-     * Most Elasticsearch API calls need the index and
-     * type passed in a parameter array.
-     *
-     * @param bool $getIdIfPossible
-     * @param bool $getSourceIfPossible
-     * @param bool $getTimestampIfPossible
-     * @param int  $limit
-     * @param int  $offset
-     *
-     * @return array
-     */
-    public function getBasicEsParams($getIdIfPossible = true, $limit = null, $offset = null)
-    {
-        $params = array(
-            'index' => $this->getIndexName(),
-            'type' => $this->getTypeName(),
-        );
 
-        if ($getIdIfPossible && $this->getKey()) {
-            $params['id'] = $this->getKey();
-        }
-
-        if (is_numeric($limit)) {
-            $params['size'] = $limit;
-        }
-
-        if (is_numeric($offset)) {
-            $params['from'] = $offset;
-        }
-
-        return $params;
-    }
 
     /**
      * Build the 'fields' parameter depending on given options.
@@ -410,169 +369,13 @@ trait ElasticquentTrait
         return $fieldsParam;
     }
 
-    /**
-     * Mapping Exists
-     *
-     * @return bool
-     */
-    public static function mappingExists()
-    {
-        $instance = new static;
 
-        $mapping = $instance->getMapping();
 
-        return (empty($mapping)) ? false : true;
-    }
 
-    /**
-     * Get Mapping
-     *
-     * @return void
-     */
-    public static function getMapping()
-    {
-        $instance = new static;
 
-        $params = $instance->getBasicEsParams();
 
-        return $instance->getElasticSearchClient()->indices()->getMapping($params);
-    }
 
-    /**
-     * Put Mapping.
-     *
-     * @param bool $ignoreConflicts
-     *
-     * @return array
-     */
-    public static function putMapping($ignoreConflicts = false)
-    {
-        $instance = new static;
 
-        $mapping = $instance->getBasicEsParams();
-
-        $params = array(
-            '_source' => array('enabled' => true),
-            'properties' => $instance->getMappingProperties(),
-        );
-
-        $mapping['body'][$instance->getTypeName()] = $params;
-
-        return $instance->getElasticSearchClient()->indices()->putMapping($mapping);
-    }
-
-    /**
-     * Delete Mapping
-     *
-     * @return array
-     */
-    public static function deleteMapping()
-    {
-        $instance = new static;
-
-        $params = $instance->getBasicEsParams();
-
-        return $instance->getElasticSearchClient()->indices()->deleteMapping($params);
-    }
-
-    /**
-     * Rebuild Mapping
-     *
-     * This will delete and then re-add
-     * the mapping for this model.
-     *
-     * @return array
-     */
-    public static function rebuildMapping()
-    {
-        $instance = new static;
-
-        // If the mapping exists, let's delete it.
-        if ($instance->mappingExists()) {
-            $instance->deleteMapping();
-        }
-
-        // Don't need ignore conflicts because if we
-        // just removed the mapping there shouldn't
-        // be any conflicts.
-        return $instance->putMapping();
-    }
-
-    /**
-     * Create Index
-     *
-     * @param int $shards
-     * @param int $replicas
-     *
-     * @return array
-     */
-    public static function createIndex($shards = null, $replicas = null)
-    {
-        $instance = new static;
-
-        $client = $instance->getElasticSearchClient();
-
-        $index = array(
-            'index' => $instance->getIndexName(),
-        );
-
-        $settings = $instance->getIndexSettings();
-        if (!is_null($settings)) {
-            $index['body']['settings'] = $settings;
-        }
-
-        if (!is_null($shards)) {
-            $index['body']['settings']['number_of_shards'] = $shards;
-        }
-
-        if (!is_null($replicas)) {
-            $index['body']['settings']['number_of_replicas'] = $replicas;
-        }
-
-        $mappingProperties = $instance->getMappingProperties();
-        if (!is_null($mappingProperties)) {
-            $index['body']['mappings'][$instance->getTypeName()] = [
-                '_source' => array('enabled' => true),
-                'properties' => $mappingProperties,
-            ];
-        }
-
-        return $client->indices()->create($index);
-    }
-
-    /**
-     * Delete Index
-     *
-     * @return array
-     */
-    public static function deleteIndex()
-    {
-        $instance = new static;
-
-        $client = $instance->getElasticSearchClient();
-
-        $index = array(
-            'index' => $instance->getIndexName(),
-        );
-
-        return $client->indices()->delete($index);
-    }
-
-    /**
-     * Type Exists.
-     *
-     * Does this type exist?
-     *
-     * @return bool
-     */
-    public static function typeExists()
-    {
-        $instance = new static;
-
-        $params = $instance->getBasicEsParams();
-
-        return $instance->getElasticSearchClient()->indices()->existsType($params);
-    }
 
     /**
      * New From Hit Builder
@@ -585,14 +388,25 @@ trait ElasticquentTrait
      */
     public function newFromHitBuilder($hit = array())
     {
+
         $key_name = $this->getKeyName();
-        
+
+
         $attributes = $hit['_source'];
 
         if (isset($hit['_id'])) {
             $attributes[$key_name] = is_int($hit['_id']) ? intval($hit['_id']) : $hit['_id'];
         }
-        
+
+        if (isset($hit['sort'])) {
+            $attributes['sort_data'] = $hit['sort'];
+        }
+
+        if(isset($hit['inner_hits'])){
+            $attributes['inner_hits'] = $hit['inner_hits'];
+        }
+
+
         // Add fields to attributes
         if (isset($hit['fields'])) {
             foreach ($hit['fields'] as $key => $value) {
@@ -622,30 +436,26 @@ trait ElasticquentTrait
      * Create a elacticquent result collection of models from plain elasticsearch result.
      *
      * @param  array  $result
+     * @param  array  $params
+     * @param  null|array  $perPage
+     * @param  null|\Elasticquent\ElasticquentCursor  $cursor
+     * @param  null|string  $cursorName
+     * @param  null|\Illuminate\Support\Collection  $cursorOrder
+     *
      * @return \Elasticquent\ElasticquentResultCollection
      */
-    public static function hydrateElasticsearchResult(array $result)
+    public static function hydrateElasticsearchResult(array $result, array $params, ?int $perPage = null, ?ElasticquentCursor $cursor = null, string $cursorName = 'cursor', ?Collection $cursorOrder = null)
     {
         $items = $result['hits']['hits'];
-        return static::hydrateElasticquentResult($items, $meta = $result);
-    }
 
-    /**
-     * Create a elacticquent result collection of models from plain arrays.
-     *
-     * @param  array  $items
-     * @param  array  $meta
-     * @return \Elasticquent\ElasticquentResultCollection
-     */
-    public static function hydrateElasticquentResult(array $items, $meta = null)
-    {
         $instance = new static;
 
         $items = array_map(function ($item) use ($instance) {
             return $instance->newFromHitBuilder($item);
         }, $items);
 
-        return $instance->newElasticquentResultCollection($items, $meta);
+        return $instance->newElasticquentResultCollection($items, $meta = $result, $params, $perPage, $cursor, $cursorName, $cursorOrder);
+
     }
 
     /**
@@ -685,7 +495,7 @@ trait ElasticquentTrait
         $items = array_map(function ($item) use ($instance, $parentRelation) {
             // Convert all null relations into empty arrays
             $item = $item ?: [];
-            
+
             return static::newFromBuilderRecursive($instance, $item, $parentRelation);
         }, $items);
 
@@ -750,11 +560,15 @@ trait ElasticquentTrait
      *
      * @param  array  $models
      * @param  array  $meta
+     * @param  null|array  $perPage
+     * @param  null|\Elasticquent\ElasticquentCursor  $cursor
+     * @param  null|string  $cursorName
+     * @param  null|\Illuminate\Support\Collection  $cursorOrder
      * @return \Elasticquent\ElasticquentResultCollection
      */
-    public function newElasticquentResultCollection(array $models = [], $meta = null)
+    public function newElasticquentResultCollection(array $models = [], ?array $meta = null, ?array $params = [], ?int $perPage = null, ?ElasticquentCursor $cursor = null, string $cursorName = 'cursor', ?Collection $cursorOrder = null)
     {
-        return new ElasticquentResultCollection($models, $meta);
+        return new ElasticquentResultCollection($models, $meta, $params, $perPage, $cursor, $cursorName, $cursorOrder);
     }
 
     /**
@@ -804,4 +618,45 @@ trait ElasticquentTrait
 
         return false;
     }
+
+
+    /**
+     * Ensure the proper order by required for cursor pagination.
+     *
+     * @param  bool  $shouldReverse
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function ensureOrderForCursorPagination($sort, $shouldReverse = false)
+    {
+        $orders = collect($sort);
+
+        if ($shouldReverse) {
+            $orders = $orders->map(function ($order) {
+                $order['order'] = $order['order'] === 'asc' ? 'desc' : 'asc';
+                return $order;
+            });
+        }
+        return $orders;
+    }
+
+    /**
+     * @return string
+     */
+    public function getItemSortKey(): string
+    {
+        return $this->itemSortKey;
+    }
+
+    /**
+     * @return array
+     */
+    public function getDefaultSort(): array
+    {
+        //return $this->defaultSort;
+        return self::$defaultSort;
+    }
+
+
+
+
 }
